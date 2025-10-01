@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deteksi Jari & Angka</title>
+
+  <!-- Bootstrap -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <!-- TensorFlow & Teachable Machine -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.20.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
+
+  <style>
+    body {
+      font-family: "Merriweather", serif;
+      background-color: #fdf6e3; /* krem lembut */
+      color: #4e342e; /* coklat tua */
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container-box {
+      background: #fffaf0; /* krem terang */
+      border-radius: 16px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+      padding: 30px;
+      max-width: 1000px;
+      width: 100%;
+    }
+    h1 {
+      font-weight: 700;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    #webcam-container {
+      border: 4px solid #d7ccc8;
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 15px;
+      box-shadow: inset 0 0 10px rgba(0,0,0,0.1);
+    }
+    button {
+      background-color: #6d4c41; /* coklat */
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 1rem;
+      transition: background 0.3s ease;
+    }
+    button:hover {
+      background-color: #4e342e; /* coklat lebih gelap */
+    }
+    .progress {
+      height: 25px;
+      margin-bottom: 10px;
+      background-color: #f1e5d6;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      background-color: #a1887f; /* coklat muda */
+      transition: width 0.5s ease-in-out;
+    }
+    #final-result {
+      font-size: 1.4rem;
+      font-weight: bold;
+      margin-top: 15px;
+      text-align: center;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.5s ease;
+    }
+    #final-result.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="container-box">
+    <h1>🎥 Deteksi Jari & Angka</h1>
+    <div class="row">
+      <!-- Webcam -->
+      <div class="col-md-6 text-center">
+        <div id="webcam-container"></div>
+        <button class="mt-3" onclick="init()">Mulai Kamera</button>
+      </div>
+
+      <!-- Hasil -->
+      <div class="col-md-6">
+        <h4 class="mb-3">Hasil Deteksi</h4>
+        <div id="label-container"></div>
+        <div id="final-result"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const URL = "https://teachablemachine.withgoogle.com/models/-bfSRPX-K/"; // ganti dengan link model kamu
+    let model, webcam, labelContainer, maxPredictions;
+    let isRunning = false;
+    let isMLMode = false;
+
+    // Mode kamera saja tanpa ML
+    async function startCameraOnly() {
+      try {
+        const button = document.querySelector('button');
+        button.innerText = 'Menghubungkan kamera...';
+        button.disabled = true;
+
+        // Gunakan getUserMedia langsung
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 300, height: 300, facingMode: 'user' }
+        });
+
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.width = 300;
+        video.height = 300;
+        video.style.borderRadius = '12px';
+
+        document.getElementById("webcam-container").appendChild(video);
+
+        const resultDiv = document.getElementById("final-result");
+        resultDiv.innerText = "✅ Kamera aktif! (Mode test - tanpa deteksi ML)";
+        resultDiv.classList.add("show");
+
+        button.innerText = 'Stop Kamera';
+        button.disabled = false;
+        isRunning = true;
+
+        // Simpan stream untuk cleanup
+        window.currentStream = stream;
+
+      } catch (error) {
+        console.error('Camera error:', error);
+        const resultDiv = document.getElementById("final-result");
+        let errorMsg = "❌ Error kamera: ";
+        
+        if (error.name === 'NotAllowedError') {
+          errorMsg += "Akses kamera ditolak. Pastikan mengizinkan akses kamera.";
+        } else if (error.name === 'NotFoundError') {
+          errorMsg += "Kamera tidak ditemukan.";
+        } else {
+          errorMsg += error.message;
+        }
+        
+        resultDiv.innerText = errorMsg;
+        resultDiv.classList.add("show");
+        
+        const button = document.querySelector('button');
+        button.innerText = 'Coba Lagi';
+        button.disabled = false;
+      }
+    }
+
+    async function init() {
+      if (isRunning) {
+        stopCamera();
+        return;
+      }
+
+      // Cek apakah tmImage tersedia
+      if (typeof tmImage === 'undefined') {
+        console.log('tmImage not available, using camera only mode');
+        const resultDiv = document.getElementById("final-result");
+        resultDiv.innerText = "⚠️ Library ML tidak tersedia. Menggunakan mode kamera saja...";
+        resultDiv.classList.add("show");
+        
+        setTimeout(() => {
+          startCameraOnly();
+        }, 1500);
+        return;
+      }
+
+      try {
+        const button = document.querySelector('button');
+        button.innerText = 'Loading model...';
+        button.disabled = true;
+
+        const modelURL = URL + "model.json";
+        const metadataURL = URL + "metadata.json";
+
+        console.log('Loading model...');
+        model = await tmImage.load(modelURL, metadataURL);
+        maxPredictions = model.getTotalClasses();
+        isMLMode = true;
+
+        const flip = true;
+        webcam = new tmImage.Webcam(300, 300, flip);
+        await webcam.setup();
+        await webcam.play();
+        window.requestAnimationFrame(loop);
+
+        document.getElementById("webcam-container").appendChild(webcam.canvas);
+
+        labelContainer = document.getElementById("label-container");
+        labelContainer.innerHTML = "";
+        for (let i = 0; i < maxPredictions; i++) {
+          const div = document.createElement("div");
+          div.classList.add("mb-2");
+          div.innerHTML = `
+            <div class="progress">
+              <div class="progress-bar" role="progressbar" style="width: 0%">0%</div>
+            </div>
+            <small class="label-text"></small>
+          `;
+          labelContainer.appendChild(div);
+        }
+
+        button.innerText = 'Stop Kamera';
+        button.disabled = false;
+        isRunning = true;
+
+      } catch (error) {
+        console.error('Error:', error);
+        
+        // Jika model gagal, coba kamera saja
+        const resultDiv = document.getElementById("final-result");
+        resultDiv.innerText = "⚠️ Model tidak dapat dimuat. Mencoba mode kamera saja...";
+        resultDiv.classList.add("show");
+        
+        setTimeout(() => {
+          startCameraOnly();
+        }, 1500);
+      }
+    }
+
+    function stopCamera() {
+      isRunning = false;
+      
+      // Stop ML webcam
+      if (webcam) {
+        webcam.stop();
+      }
+      
+      // Stop regular video stream
+      if (window.currentStream) {
+        window.currentStream.getTracks().forEach(track => track.stop());
+        window.currentStream = null;
+      }
+      
+      // Clear container
+      const container = document.getElementById("webcam-container");
+      while (container.firstChild) {
+        container.removeChild(container.firstChild);
+      }
+      
+      // Clear progress bars
+      if (labelContainer) {
+        labelContainer.innerHTML = "";
+      }
+      
+      const button = document.querySelector('button');
+      button.innerText = 'Mulai Kamera';
+      button.disabled = false;
+      
+      const resultDiv = document.getElementById("final-result");
+      resultDiv.innerText = "Kamera dimatikan";
+      resultDiv.classList.add("show");
+      
+      isMLMode = false;
+    }
+
+    async function loop() {
+      if (!isRunning || !webcam || !isMLMode) return;
+      webcam.update();
+      await predict();
+      window.requestAnimationFrame(loop);
+    }
+
+    async function predict() {
+      if (!model || !webcam || !isRunning || !isMLMode) return;
+      
+      const prediction = await model.predict(webcam.canvas);
+      let highestClass = "";
+      let highestProb = 0;
+
+      for (let i = 0; i < prediction.length; i++) {
+        const prob = Math.round(prediction[i].probability * 100);
+        const div = labelContainer.children[i];
+        div.querySelector(".progress-bar").style.width = prob + "%";
+        div.querySelector(".progress-bar").innerText = prob + "%";
+        div.querySelector(".label-text").innerText = prediction[i].className;
+
+        if (prob > highestProb) {
+          highestProb = prob;
+          highestClass = prediction[i].className;
+        }
+      }
+
+      const finalResult = document.getElementById("final-result");
+      if (highestClass) {
+        finalResult.innerText = `👉 ${highestClass} (${highestProb}%)`;
+        finalResult.classList.add("show");
+      }
+    }
+
+    // Check browser support
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      document.addEventListener('DOMContentLoaded', function() {
+        const resultDiv = document.getElementById("final-result");
+        resultDiv.innerText = "❌ Browser tidak mendukung akses kamera";
+        resultDiv.classList.add("show");
+        document.querySelector('button').disabled = true;
+      });
+    }
+  </script>
+</body>
+</html>
